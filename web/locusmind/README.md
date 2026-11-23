@@ -12,6 +12,18 @@ pnpm dev
 
 Run `pnpm build` to type-check and create a production build.
 
+## Firebase Hosting
+
+After configuring `.env.local` as described below, build and deploy from this
+directory:
+
+```sh
+pnpm build
+pnpm dlx firebase-tools deploy --only hosting --project YOUR_FIREBASE_PROJECT_ID
+```
+
+Firebase Hosting serves the generated `dist/` directory.
+
 ## Firebase GitHub sign-in
 
 1. Create a Firebase project and register a web app.
