@@ -36,12 +36,29 @@ const snapshotSchema = z.object({
   files: z.array(fileSchema),
 });
 
+const githubBaseSchema = z.object({
+  repository: z.object({ id: z.number().int().positive(), full_name: z.string().min(1), private: z.boolean() }),
+  branch: z.string().min(1),
+  commit: z.string().min(1).nullable(),
+  files: z.array(fileSchema),
+});
+
 export const workspaceSchema = z
   .object({
     id: z.string().uuid(),
     name: z.string().min(1),
     files: z.array(fileSchema),
     snapshots: z.array(snapshotSchema),
+    githubBase: githubBaseSchema.optional(),
+    folders: z.array(
+      z.string().refine(
+        (path) =>
+          path === "" ||
+          (!path.includes("\\") &&
+            path.split("/").every((segment) => segment && segment !== "." && segment !== "..")),
+        "Folder paths must contain valid workspace-relative segments.",
+      ),
+    ).default([]),
   })
   .superRefine((workspace, context) => {
     const paths = new Set<string>();
@@ -69,14 +86,65 @@ export const workspaceSchema = z
 export type WorkspaceFile = z.infer<typeof fileSchema>;
 export type Workspace = z.infer<typeof workspaceSchema>;
 export type Snapshot = z.infer<typeof snapshotSchema>;
+export type GithubBase = z.infer<typeof githubBaseSchema>;
 
-const STORAGE_KEY_PREFIX = "locusmind.workspace.v1";
-
-function getStorageKey(userId: string): string {
-  return `${STORAGE_KEY_PREFIX}.${encodeURIComponent(userId)}`;
+export function mergeGithubFiles(
+  workspace: Workspace,
+  repository: GithubBase["repository"],
+  branch: string,
+  commit: string | null,
+  imported: WorkspaceFile[],
+): Workspace {
+  const localPaths = new Set(workspace.files.map((file) => file.path));
+  const previousPaths = new Set(
+    workspace.githubBase?.repository.id === repository.id
+      ? workspace.githubBase.files.map((file) => file.path)
+      : [],
+  );
+  const additions = imported.filter((file) => !localPaths.has(file.path) && !previousPaths.has(file.path));
+  const allFiles = [...workspace.files, ...additions];
+  const filePaths = new Set(allFiles.map((file) => file.path));
+  const folders = new Set(workspace.folders);
+  for (const folder of workspace.folders) {
+    for (let parent = getFolderPath(folder); parent; parent = getFolderPath(parent)) {
+      folders.add(parent);
+    }
+  }
+  for (const file of allFiles) {
+    for (let folder = getFolderPath(file.path); folder; folder = getFolderPath(folder)) {
+      if (filePaths.has(folder)) throw new Error(`Cannot import: "${folder}" is both a file and a folder.`);
+    }
+    if (folders.has(file.path)) throw new Error(`Cannot import: "${file.path}" is an existing folder.`);
+  }
+  return workspaceSchema.parse({
+    ...workspace,
+    files: allFiles,
+    githubBase: { repository, branch, commit, files: imported },
+  });
 }
 
-const drawingStarter = JSON.stringify(
+export function getGithubChanges(workspace: Workspace): {
+  deleted: string[];
+  baseByPath: Map<string, WorkspaceFile>;
+} {
+  const baseByPath = new Map(workspace.githubBase?.files.map((file) => [file.path, file]));
+  const paths = new Set(workspace.files.map((file) => file.path));
+  return {
+    baseByPath,
+    deleted: [...baseByPath.keys()].filter((path) => !paths.has(path)).sort(),
+  };
+}
+
+const STORAGE_KEY_PREFIX = "locusmind.workspace.v1";
+const GUEST_STORAGE_KEY = "locusmind.guest.workspace.v1";
+
+function getStorageKey(userId: string | null): string {
+  return userId === null
+    ? GUEST_STORAGE_KEY
+    : `${STORAGE_KEY_PREFIX}.${encodeURIComponent(userId)}`;
+}
+
+export const drawingStarter = JSON.stringify(
   {
     type: "excalidraw",
     version: 2,
@@ -100,7 +168,7 @@ export function createStarterWorkspace(): Workspace {
         path: "notes/Welcome.md",
         type: "markdown",
         content:
-          "# A space to think\n\nWelcome to locusmind. Capture an idea, connect it to another, and let your thinking take shape.\n\n## Start here\n\n- Create a note for something on your mind\n- Sketch a system or a process\n- Use **Save version** to keep a local checkpoint\n\n> Your workspace is saved in this browser for now.",
+          "# A space to think\n\nWelcome to locusmind. Capture an idea, connect it to another, and let your thinking take shape.\n\n## Start here\n\n- Create a note for something on your mind\n- Sketch a system or a process\n\n> Your workspace is saved in this browser for now.",
         updatedAt: now,
       },
       {
@@ -120,11 +188,12 @@ export function createStarterWorkspace(): Workspace {
       },
     ],
     snapshots: [],
+    folders: ["notes", "drawings"],
   };
 }
 
 export function loadWorkspace(
-  userId: string,
+  userId: string | null,
 ): { workspace: Workspace; error: string | null } {
   try {
     const stored = window.localStorage.getItem(getStorageKey(userId));
@@ -143,7 +212,7 @@ export function loadWorkspace(
   }
 }
 
-export function persistWorkspace(userId: string, workspace: Workspace): void {
+export function persistWorkspace(userId: string | null, workspace: Workspace): void {
   const validatedWorkspace = workspaceSchema.parse(workspace);
   window.localStorage.setItem(
     getStorageKey(userId),
@@ -177,22 +246,29 @@ export function getFileName(path: string): string {
   return path.split("/").at(-1) ?? path;
 }
 
+export function getFolderPath(path: string): string {
+  return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+}
+
 export function getFolderName(path: string): string {
-  return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "Workspace";
+  return getFolderPath(path) || "Workspace";
 }
 
 export function getUniquePath(
   files: WorkspaceFile[],
   type: WorkspaceFile["type"],
+  folders: string[] = [],
+  parent?: string,
 ): string {
-  const folder = type === "markdown" ? "notes" : "drawings";
+  const folder = parent ?? (type === "markdown" ? "notes" : "drawings");
   const extension = type === "markdown" ? ".md" : ".excalidraw";
-  const existing = new Set(files.map((file) => file.path));
+  const existing = new Set([...folders, ...files.map((file) => file.path)]);
+  const prefix = folder ? `${folder}/` : "";
   let index = 1;
-  let path = `${folder}/Untitled${extension}`;
+  let path = `${prefix}Untitled${extension}`;
   while (existing.has(path)) {
     index += 1;
-    path = `${folder}/Untitled ${index}${extension}`;
+    path = `${prefix}Untitled ${index}${extension}`;
   }
   return path;
 }
