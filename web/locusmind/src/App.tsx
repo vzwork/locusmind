@@ -572,6 +572,7 @@ function WorkspaceApp({ user, githubToken, authError, onReconnect, onSignOut }: 
             )}
             <Breadcrumbs
               workspace={workspace}
+              rootName={repository?.full_name ?? workspace.name}
               folders={explorer.allFolders}
               selection={selection}
               activeFile={activeFile}

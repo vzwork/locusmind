@@ -6,6 +6,7 @@ import type { Navigate } from "../explorer/useWorkspaceSelection";
 
 type Props = {
   workspace: Workspace;
+  rootName: string;
   folders: string[];
   selection: Selection;
   activeFile: WorkspaceFile | undefined;
@@ -13,7 +14,7 @@ type Props = {
   reveal: (folder: string) => void;
 };
 
-export function Breadcrumbs({ workspace, folders, selection, activeFile, navigate, reveal }: Props) {
+export function Breadcrumbs({ workspace, rootName, folders, selection, activeFile, navigate, reveal }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<number | undefined>(undefined);
@@ -21,7 +22,7 @@ export function Breadcrumbs({ workspace, folders, selection, activeFile, navigat
   const folderPath = activeFile ? getFolderPath(activeFile.path) : selection?.type === "folder" ? selection.path : "";
   const segments = folderPath ? folderPath.split("/") : [];
   const crumbs = [
-    { key: "root", label: workspace.name, folder: "", className: "breadcrumb-workspace" },
+    { key: "root", label: rootName, folder: "", className: "breadcrumb-workspace" },
     ...segments.map((label, index) => ({
       key: `folder:${segments.slice(0, index + 1).join("/")}`,
       label,
