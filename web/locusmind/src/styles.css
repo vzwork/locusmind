@@ -820,7 +820,7 @@ select:focus-visible {
 
 .topbar {
   position: relative;
-  z-index: 1;
+  z-index: 5;
   display: flex;
   flex: 0 0 58px;
   align-items: center;
